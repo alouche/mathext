@@ -1949,24 +1949,14 @@ OneTen:
 	return ZR, ZI, FNU, KODE, N, YR, YI, NZ, TOL
 }
 
-// ZSERI COMPUTES THE I BESSEL FUNCTION FOR REAL(Z)>=0.0 BY
-// MEANS OF THE POWER SERIES FOR LARGE CABS(Z) IN THE
-// REGION CABS(Z)<=2*SQRT(FNU+1). NZ=0 IS A NORMAL return.
-// NZ>0 MEANS THAT THE LAST NZ COMPONENTS WERE SET TO ZERO
-// DUE TO UNDERFLOW. NZ<0 MEANS UNDERFLOW OCCURRED, BUT THE
-// CONDITION CABS(Z)<=2*SQRT(FNU+1) WAS VIOLATED AND THE
-// COMPUTATION MUST BE COMPLETED IN ANOTHER ROUTINE WITH N=N-ABS(NZ).
+// Zseri computes the I bessel function for real(z) >= 0 by means of the power
+// series for large |z| in the region |z| <= 2*sqrt(fnu+1).
+//
+// nz = 0 is a normal return. nz > 0 means that the last nz components were set
+// to zero due to underflow. nz < 0 means that underflow occurred, but the
+// condition |z| <= 2*sqrt(fnu+1) was violated and the computation must be
+// completed in another routine with n -= abs(nz).
 func Zseri(z complex128, fnu float64, kode, n int, y []complex128, tol, elim, alim float64) (nz int) {
-	var AA, AK, ATOL,
-		DFNU, FNUP, RS, S, SS float64
-	var I, IB, IDUM, IFLAG, IL, L, M, NN, NW int
-	var w [2]complex128
-	var sin, cos float64
-	var first bool
-
-	var scale float64
-	var ak1, coef, rz, s1, s2, st complex128
-
 	// TOOD(btracey): The original fortran line is "ARM = 1.0D+3*D1MACH(1)". Evidently, in Fortran
 	// this is interpreted as one to the power of +3*D1MACH(1). While it is possible
 	// this was intentional, it seems unlikely.
@@ -1985,127 +1975,140 @@ func Zseri(z complex128, fnu float64, kode, n int, y []complex128, tol, elim, al
 		}
 		return n
 	}
-	crscr := 1.0
-	IFLAG = 0
 	hz := 0.5 * z
 	var cz complex128
-	var ACZ float64
+	var acz float64
 	if az > math.Sqrt(arm) {
 		cz = hz * hz
-		ACZ = cmplx.Abs(cz)
+		acz = cmplx.Abs(cz)
 	}
-	NN = n
+	NN := n
 	ck := cmplx.Log(hz)
-Twenty:
-	DFNU = fnu + float64(NN-1)
-	FNUP = DFNU + 1.0E0
-
-	// UNDERFLOW TEST.
-	ak1 = ck * complex(DFNU, 0)
-	AK = dgamln(FNUP, IDUM)
-	ak1 -= complex(AK, 0)
-	if kode == 2 {
-		ak1 -= complex(real(z), 0)
+	var ak1 complex128
+	for {
+		dfnu := fnu + float64(NN-1)
+		// Underflow test.
+		ak1 = ck * complex(dfnu, 0)
+		ak := dgamln(dfnu+1, 0)
+		ak1 -= complex(ak, 0)
+		if kode == 2 {
+			ak1 -= complex(real(z), 0)
+		}
+		if real(ak1) > -elim {
+			break
+		}
+		nz++
+		y[NN-1] = 0
+		if acz > dfnu {
+			// Return with nz < 0 if abs(Z*Z/4)>fnu+u-nz-1 complete the calculation
+			// in cbinu with n = n - abs(nz).
+			nz *= -1
+			return nz
+		}
+		NN--
+		if NN == 0 {
+			return nz
+		}
 	}
-	if real(ak1) > -elim {
-		goto Fourty
-	}
-Thirty:
-	nz++
-	y[NN-1] = 0
-	if ACZ > DFNU {
-		// Return with nz < 0 if abs(Z*Z/4)>fnu+u-nz-1 complete the calculation
-		// in cbinu with n = n - abs(nz).
-		nz *= -1
-		return nz
-	}
-	NN--
-	if NN == 0 {
-		return nz
-	}
-	goto Twenty
-Fourty:
-	if real(ak1) <= -alim {
-		IFLAG = 1
-		SS = 1 / tol
+	crscr := 1.0
+	var flag int
+	var scale float64
+	aa := real(ak1)
+	if aa <= -alim {
+		flag = 1
 		crscr = tol
-		scale = arm * SS
+		scale = arm / tol
+		aa -= math.Log(tol)
 	}
-	AA = math.Exp(real(ak1))
-	if IFLAG == 1 {
-		AA *= SS
-	}
-	sin, cos = math.Sincos(imag(ak1))
-	coef = complex(AA*cos, AA*sin)
-	ATOL = tol * ACZ / FNUP
-	IL = min(2, NN)
-	for I = 1; I <= IL; I++ {
-		DFNU = fnu + float64(NN-I)
-		FNUP = DFNU + 1.0E0
-		s1 = 1
-		if ACZ >= tol*FNUP {
-			ak1 = 1
-			AK = FNUP + 2.0E0
-			S = FNUP
-			AA = 2.0E0
-			first = true
-			for first || AA > ATOL {
-				RS = 1.0E0 / S
-				st = ak1 * cz
-				ak1 = st * complex(RS, 0)
-				s1 += ak1
-				S += AK
-				AK += 2
-				AA *= ACZ * RS
-				first = false
+	var w [2]complex128
+	for {
+		coef := cmplx.Exp(complex(aa, imag(ak1)))
+		atol := tol * acz / (fnu + float64(NN))
+		for i := 0; i < min(2, NN); i++ {
+			FNUP := fnu + float64(NN-i)
+			s1 := 1 + 0i
+			if acz >= tol*FNUP {
+				ak2 := 1 + 0i
+				ak := FNUP + 2
+				S := FNUP
+				scl := 2.0
+				first := true
+				for first || scl > atol {
+					ak2 = ak2 * cz * complex(1/S, 0)
+					scl *= acz / S
+					s1 += ak2
+					S += ak
+					ak += 2
+					first = false
+				}
 			}
-		}
-		s2 = s1 * coef
-		w[I-1] = s2
-		if IFLAG != 0 {
-			NW = Zuchk(s2, scale, tol)
-			if NW != 0 {
-				goto Thirty
+			s2 := s1 * coef
+			w[i] = s2
+			if flag == 1 {
+				if Zuchk(s2, scale, tol) != 0 {
+					var full bool
+					var dfnu float64
+					for {
+						if full {
+							dfnu = fnu + float64(NN-1)
+							// Underflow test.
+							ak1 = ck * complex(dfnu, 0)
+							ak1 -= complex(dgamln(dfnu+1, 0), 0)
+							if kode == 2 {
+								ak1 -= complex(real(z), 0)
+							}
+							if real(ak1) > -elim {
+								break
+							}
+						} else {
+							full = true
+						}
+						nz++
+						y[NN-1] = 0
+						if acz > dfnu {
+							// Return with nz < 0 if abs(Z*Z/4)>fnu+u-nz-1 complete the calculation
+							// in cbinu with n = n - abs(nz).
+							nz *= -1
+							return nz
+						}
+						NN--
+						if NN == 0 {
+							return nz
+						}
+					}
+					continue
+				}
 			}
+			y[NN-i-1] = s2 * complex(crscr, 0)
+			coef /= hz
+			coef *= complex(FNUP-1, 0)
 		}
-		M = NN - I + 1
-		y[M-1] = s2 * complex(crscr, 0)
-		if I == IL {
-			continue
-		}
-		st = coef / hz
-		coef = st * complex(DFNU, 0)
+		break
 	}
 	if NN <= 2 {
 		return nz
 	}
-	rz = complex(2*real(z)/(az*az), -2*imag(z)/(az*az))
-	if IFLAG != 1 {
+	rz := complex(2*real(z)/(az*az), -2*imag(z)/(az*az))
+	if flag == 0 {
 		for i := NN - 3; i >= 0; i-- {
 			y[i] = complex(float64(i+1)+fnu, 0)*rz*y[i+1] + y[i+2]
 		}
 		return nz
 	}
-	// EXP(-ALIM)=EXP(-ELIM)/TOL=APPROX. ONE PRECISION ABOVE THE
-	// UNDERFLOW LIMIT = ASCLE = dmach[1)*SS*1.0D+3.
-	K := NN - 2
-	AK = float64(K)
-	s1 = w[0]
-	s2 = w[1]
-	for L = 3; L <= NN; L++ {
-		s1, s2 = s2, s1+complex(AK+fnu, 0)*(rz*s2)
+
+	// exp(-alim)=exp(-elim)/tol=approximately one digit of precision above the
+	// underflow limit, which equals scale = dmach[1)*SS*1e3.
+	s1 := w[0]
+	s2 := w[1]
+	for K := NN - 3; K >= 0; K-- {
+		s1, s2 = s2, s1+complex(float64(K+1)+fnu, 0)*(rz*s2)
 		ck := s2 * complex(crscr, 0)
-		y[K-1] = ck
-		AK--
-		K--
+		y[K] = ck
 		if cmplx.Abs(ck) > scale {
-			IB = L + 1
-			for I = IB; I <= NN; I++ {
-				y[K-1] = complex(AK+fnu, 0)*rz*y[K] + y[K+1]
-				AK--
-				K--
+			for ; K >= 0; K-- {
+				y[K] = complex(float64(K+1)+fnu, 0)*rz*y[K+1] + y[K+2]
 			}
-			break
+			return nz
 		}
 	}
 	return nz
