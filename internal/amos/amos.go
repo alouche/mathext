@@ -1420,7 +1420,8 @@ func Zacai(ZR, ZI, FNU float64, KODE, MR, N int, YR, YI []float64, NZ int, RL, T
 		CSPNI, C1R, C1I, C2R, C2I, DFNU, FMR, PI,
 		SGN, YY, ZNR, ZNI float64
 	var INU, IUF, NN, NW int
-	var zn, c1, c2 complex128
+	var zn, c1, c2, z complex128
+	var y []complex128
 	//var sin, cos float64
 
 	CYR := []float64{math.NaN(), 0, 0}
@@ -1441,7 +1442,16 @@ func Zacai(ZR, ZI, FNU float64, KODE, MR, N int, YR, YI []float64, NZ int, RL, T
 	}
 Ten:
 	// POWER SERIES FOR THE I FUNCTION.
-	ZNR, ZNI, FNU, KODE, NN, YR, YI, NW, TOL, ELIM, ALIM = Zseri(ZNR, ZNI, FNU, KODE, NN, YR, YI, NW, TOL, ELIM, ALIM)
+	z = complex(ZNR, ZNI)
+	y = make([]complex128, len(YR))
+	for i, v := range YR {
+		y[i] = complex(v, YI[i])
+	}
+	NW = Zseri(z, FNU, KODE, NN, y[1:], TOL, ELIM, ALIM)
+	for i, v := range y {
+		YR[i] = real(v)
+		YI[i] = imag(v)
+	}
 	goto Fourty
 Twenty:
 	if AZ < RL {
@@ -1946,234 +1956,159 @@ OneTen:
 // DUE TO UNDERFLOW. NZ<0 MEANS UNDERFLOW OCCURRED, BUT THE
 // CONDITION CABS(Z)<=2*SQRT(FNU+1) WAS VIOLATED AND THE
 // COMPUTATION MUST BE COMPLETED IN ANOTHER ROUTINE WITH N=N-ABS(NZ).
-func Zseri(ZR, ZI, FNU float64, KODE, N int, YR, YI []float64, NZ int, TOL, ELIM, ALIM float64) (
-	ZRout, ZIout, FNUout float64, KODEout, Nout int, YRout, YIout []float64, NZout int, TOLout, ELIMout, ALIMout float64) {
-	var AA, ACZ, AK, AK1I, AK1R, ARM, ASCLE, ATOL,
-		AZ, CKI, CKR, COEFI, COEFR, CONEI, CONER, CRSCR, CZI, CZR, DFNU,
-		FNUP, HZI, HZR, RAZ, RS, RTR1, RZI, RZR, S, SS, STI,
-		STR, S1I, S1R, S2I, S2R, ZEROI, ZEROR float64
-	var I, IB, IDUM, IFLAG, IL, K, L, M, NN, NW int
-	var WR, WI [3]float64
-	var tmp, s2 complex128
+func Zseri(z complex128, fnu float64, kode, n int, y []complex128, tol, elim, alim float64) (nz int) {
+	var AA, AK, ATOL,
+		DFNU, FNUP, RS, S, SS float64
+	var I, IB, IDUM, IFLAG, IL, L, M, NN, NW int
+	var w [2]complex128
 	var sin, cos float64
+	var first bool
 
-	CONER = 1.0
-	NZ = 0
-	AZ = cmplx.Abs(complex(ZR, ZI))
-	if AZ == 0.0E0 {
-		goto OneSixty
-	}
-	// TODO(btracey)
-	// The original fortran line is "ARM = 1.0D+3*D1MACH(1)". Evidently, in Fortran
+	var scale float64
+	var ak1, coef, rz, s1, s2, st complex128
+
+	// TOOD(btracey): The original fortran line is "ARM = 1.0D+3*D1MACH(1)". Evidently, in Fortran
 	// this is interpreted as one to the power of +3*D1MACH(1). While it is possible
 	// this was intentional, it seems unlikely.
-	//ARM = 1.0E0 + 3*dmach[1]
-	//math.Pow(1, 3*dmach[1])
-	ARM = 1000 * dmach[1]
-	RTR1 = math.Sqrt(ARM)
-	CRSCR = 1.0E0
+	arm := 1000 * dmach[1]
+	az := cmplx.Abs(z)
+	if az < arm {
+		for i := 0; i < n; i++ {
+			y[i] = 0
+		}
+		if fnu == 0 {
+			y[0] = 1
+			n--
+		}
+		if az == 0 {
+			return 0
+		}
+		return n
+	}
+	crscr := 1.0
 	IFLAG = 0
-	if AZ < ARM {
-		goto OneFifty
+	hz := 0.5 * z
+	var cz complex128
+	var ACZ float64
+	if az > math.Sqrt(arm) {
+		cz = hz * hz
+		ACZ = cmplx.Abs(cz)
 	}
-	HZR = 0.5E0 * ZR
-	HZI = 0.5E0 * ZI
-	CZR = ZEROR
-	CZI = ZEROI
-	if AZ <= RTR1 {
-		goto Ten
-	}
-	tmp = complex(HZR, HZI) * complex(HZR, HZI)
-	CZR = real(tmp)
-	CZI = imag(tmp)
-Ten:
-	ACZ = cmplx.Abs(complex(CZR, CZI))
-	NN = N
-	tmp = cmplx.Log(complex(HZR, HZI))
-	CKR = real(tmp)
-	CKI = imag(tmp)
+	NN = n
+	ck := cmplx.Log(hz)
 Twenty:
-	DFNU = FNU + float64(float32(NN-1))
+	DFNU = fnu + float64(NN-1)
 	FNUP = DFNU + 1.0E0
 
 	// UNDERFLOW TEST.
-	AK1R = CKR * DFNU
-	AK1I = CKI * DFNU
+	ak1 = ck * complex(DFNU, 0)
 	AK = dgamln(FNUP, IDUM)
-	AK1R = AK1R - AK
-	if KODE == 2 {
-		AK1R = AK1R - ZR
+	ak1 -= complex(AK, 0)
+	if kode == 2 {
+		ak1 -= complex(real(z), 0)
 	}
-	if AK1R > (-ELIM) {
+	if real(ak1) > -elim {
 		goto Fourty
 	}
 Thirty:
-	NZ = NZ + 1
-	YR[NN] = ZEROR
-	YI[NN] = ZEROI
+	nz++
+	y[NN-1] = 0
 	if ACZ > DFNU {
-		goto OneNinety
+		// Return with nz < 0 if abs(Z*Z/4)>fnu+u-nz-1 complete the calculation
+		// in cbinu with n = n - abs(nz).
+		nz *= -1
+		return nz
 	}
-	NN = NN - 1
+	NN--
 	if NN == 0 {
-		return ZR, ZI, FNU, KODE, N, YR, YI, NZ, TOL, ELIM, ALIM
+		return nz
 	}
 	goto Twenty
 Fourty:
-	if AK1R > (-ALIM) {
-		goto Fifty
+	if real(ak1) <= -alim {
+		IFLAG = 1
+		SS = 1 / tol
+		crscr = tol
+		scale = arm * SS
 	}
-	IFLAG = 1
-	SS = 1.0E0 / TOL
-	CRSCR = TOL
-	ASCLE = ARM * SS
-Fifty:
-	AA = math.Exp(AK1R)
+	AA = math.Exp(real(ak1))
 	if IFLAG == 1 {
-		AA = AA * SS
+		AA *= SS
 	}
-	sin, cos = math.Sincos(AK1I)
-	COEFR = AA * cos
-	COEFI = AA * sin
-	ATOL = TOL * ACZ / FNUP
+	sin, cos = math.Sincos(imag(ak1))
+	coef = complex(AA*cos, AA*sin)
+	ATOL = tol * ACZ / FNUP
 	IL = min(2, NN)
 	for I = 1; I <= IL; I++ {
-		DFNU = FNU + float64(float32(NN-I))
+		DFNU = fnu + float64(NN-I)
 		FNUP = DFNU + 1.0E0
-		S1R = CONER
-		S1I = CONEI
-		if ACZ < TOL*FNUP {
-			goto Seventy
+		s1 = 1
+		if ACZ >= tol*FNUP {
+			ak1 = 1
+			AK = FNUP + 2.0E0
+			S = FNUP
+			AA = 2.0E0
+			first = true
+			for first || AA > ATOL {
+				RS = 1.0E0 / S
+				st = ak1 * cz
+				ak1 = st * complex(RS, 0)
+				s1 += ak1
+				S += AK
+				AK += 2
+				AA *= ACZ * RS
+				first = false
+			}
 		}
-		AK1R = CONER
-		AK1I = CONEI
-		AK = FNUP + 2.0E0
-		S = FNUP
-		AA = 2.0E0
-	Sixty:
-		RS = 1.0E0 / S
-		STR = AK1R*CZR - AK1I*CZI
-		STI = AK1R*CZI + AK1I*CZR
-		AK1R = STR * RS
-		AK1I = STI * RS
-		S1R = S1R + AK1R
-		S1I = S1I + AK1I
-		S = S + AK
-		AK = AK + 2.0E0
-		AA = AA * ACZ * RS
-		if AA > ATOL {
-			goto Sixty
+		s2 = s1 * coef
+		w[I-1] = s2
+		if IFLAG != 0 {
+			NW = Zuchk(s2, scale, tol)
+			if NW != 0 {
+				goto Thirty
+			}
 		}
-	Seventy:
-		S2R = S1R*COEFR - S1I*COEFI
-		S2I = S1R*COEFI + S1I*COEFR
-		WR[I] = S2R
-		WI[I] = S2I
-		if IFLAG == 0 {
-			goto Eighty
-		}
-		s2 = complex(S2R, S2I)
-		NW = Zuchk(s2, ASCLE, TOL)
-		if NW != 0 {
-			goto Thirty
-		}
-	Eighty:
 		M = NN - I + 1
-		YR[M] = S2R * CRSCR
-		YI[M] = S2I * CRSCR
+		y[M-1] = s2 * complex(crscr, 0)
 		if I == IL {
 			continue
 		}
-		tmp = complex(COEFR, COEFI) / complex(HZR, HZI)
-		STR = real(tmp)
-		STI = imag(tmp)
-		COEFR = STR * DFNU
-		COEFI = STI * DFNU
+		st = coef / hz
+		coef = st * complex(DFNU, 0)
 	}
 	if NN <= 2 {
-		return ZR, ZI, FNU, KODE, N, YR, YI, NZ, TOL, ELIM, ALIM
+		return nz
 	}
-	K = NN - 2
-	AK = float64(float32(K))
-	RAZ = 1.0E0 / AZ
-	STR = ZR * RAZ
-	STI = -ZI * RAZ
-	RZR = (STR + STR) * RAZ
-	RZI = (STI + STI) * RAZ
-	if IFLAG == 1 {
-		goto OneTwenty
+	rz = complex(2*real(z)/(az*az), -2*imag(z)/(az*az))
+	if IFLAG != 1 {
+		for i := NN - 3; i >= 0; i-- {
+			y[i] = complex(float64(i+1)+fnu, 0)*rz*y[i+1] + y[i+2]
+		}
+		return nz
 	}
-	IB = 3
-OneHundred:
-	for I = IB; I <= NN; I++ {
-		YR[K] = (AK+FNU)*(RZR*YR[K+1]-RZI*YI[K+1]) + YR[K+2]
-		YI[K] = (AK+FNU)*(RZR*YI[K+1]+RZI*YR[K+1]) + YI[K+2]
-		AK = AK - 1.0E0
-		K = K - 1
-	}
-	return ZR, ZI, FNU, KODE, N, YR, YI, NZ, TOL, ELIM, ALIM
-
-	// RECUR BACKWARD WITH SCALED VALUES.
-OneTwenty:
 	// EXP(-ALIM)=EXP(-ELIM)/TOL=APPROX. ONE PRECISION ABOVE THE
 	// UNDERFLOW LIMIT = ASCLE = dmach[1)*SS*1.0D+3.
-	S1R = WR[1]
-	S1I = WI[1]
-	S2R = WR[2]
-	S2I = WI[2]
+	K := NN - 2
+	AK = float64(K)
+	s1 = w[0]
+	s2 = w[1]
 	for L = 3; L <= NN; L++ {
-		CKR = S2R
-		CKI = S2I
-		S2R = S1R + (AK+FNU)*(RZR*CKR-RZI*CKI)
-		S2I = S1I + (AK+FNU)*(RZR*CKI+RZI*CKR)
-		S1R = CKR
-		S1I = CKI
-		CKR = S2R * CRSCR
-		CKI = S2I * CRSCR
-		YR[K] = CKR
-		YI[K] = CKI
-		AK = AK - 1.0E0
-		K = K - 1
-		if cmplx.Abs(complex(CKR, CKI)) > ASCLE {
-			goto OneFourty
+		s1, s2 = s2, s1+complex(AK+fnu, 0)*(rz*s2)
+		ck := s2 * complex(crscr, 0)
+		y[K-1] = ck
+		AK--
+		K--
+		if cmplx.Abs(ck) > scale {
+			IB = L + 1
+			for I = IB; I <= NN; I++ {
+				y[K-1] = complex(AK+fnu, 0)*rz*y[K] + y[K+1]
+				AK--
+				K--
+			}
+			break
 		}
 	}
-	return ZR, ZI, FNU, KODE, N, YR, YI, NZ, TOL, ELIM, ALIM
-OneFourty:
-	IB = L + 1
-	if IB > NN {
-		return ZR, ZI, FNU, KODE, N, YR, YI, NZ, TOL, ELIM, ALIM
-	}
-	goto OneHundred
-OneFifty:
-	NZ = N
-	if FNU == 0.0E0 {
-		NZ = NZ - 1
-	}
-OneSixty:
-	YR[1] = ZEROR
-	YI[1] = ZEROI
-	if FNU != 0.0E0 {
-		goto OneSeventy
-	}
-	YR[1] = CONER
-	YI[1] = CONEI
-OneSeventy:
-	if N == 1 {
-		return ZR, ZI, FNU, KODE, N, YR, YI, NZ, TOL, ELIM, ALIM
-	}
-	for I = 2; I <= N; I++ {
-		YR[I] = ZEROR
-		YI[I] = ZEROI
-	}
-	return ZR, ZI, FNU, KODE, N, YR, YI, NZ, TOL, ELIM, ALIM
-
-	// return WITH NZ<0 if CABS(Z*Z/4)>FNU+N-NZ-1 COMPLETE
-	// THE CALCULATION IN CBINU WITH N=N-IABS(NZ)
-
-OneNinety:
-	NZ = -NZ
-	return ZR, ZI, FNU, KODE, N, YR, YI, NZ, TOL, ELIM, ALIM
+	return nz
 }
 
 // Zs1s2 tests for a possible underflow resulting from the addition of the I and
