@@ -2048,6 +2048,12 @@ func Zseri(z complex128, fnu float64, kode, n int, y []complex128, tol, elim, al
 				if Zuchk(s2, scale, tol) != 0 {
 					var full bool
 					var dfnu float64
+					// This code is similar to the code that exists above. The
+					// code copying is here because the original Fortran used
+					// a goto to solve the loop-and-a-half problem. Removing the
+					// goto makes the behavior of the function and variable scoping
+					// much clearer, but requires copying this code due to Go's
+					// goto rules.
 					for {
 						if full {
 							dfnu = fnu + float64(NN-1)
